@@ -38,6 +38,7 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
   suppressPackageStartupMessages(library(dplyr))
   suppressPackageStartupMessages(library(TmCalculator))
   suppressPackageStartupMessages(library(purrr))
+  
   # set Tm values, if no input is given determine upper and lower threshold according to general guidelines
   if(is.na(Tm_in)){
     Tm_upper<-65
@@ -46,6 +47,7 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
     Tm_upper<-Tm_in+Tm_delta_max
     Tm_lower<-Tm_in-Tm_delta_max
   }
+  #adjust position of probe to be in relation to start of ROI
   if(!is.na(position_probe)){
     if(!is.na(ROI)){
       position_probe<-position_probe-ROI[[1]]
@@ -57,13 +59,13 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
       #align sequences
       alignment<-sequences %>% RemoveGaps() %>% AlignSeqs(., verbose=FALSE) # align sequences
     }
-
+    
     # get consensus sequence
     consensus<-ConsensusSequence(alignment, threshold=mismatch_threshold)
   }else{
     consensus<-sequences
   }
-  if(!is.na(ROI)){
+  if(length(which(is.na(ROI)))==0){
     if(ROI[[1]]<1){
       ROI[[1]]<-1
     }
@@ -79,77 +81,121 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
     position_probe<-151
     
   }
-
   
-  # crop sequence to ROI
   if(!length(ROI)==2){
     ROI<-c(1, width(consensus)-length_max)
   }
+  
+  # crop sequence to ROI
   consensus<-subseq(consensus, ROI[[1]], ROI[[2]]+length_max)
   # go through all positions and find primers of different lengths, make df with Tm, GC, mismatches
   # find all possible primer and probe sequences in the given ROI with Tm, GC content etc
-  n=(width(consensus)-length_max)*(length_max-length_min+1)
-  df<-data.frame(ID=numeric(length = n), pos=numeric(length = n), seq=character(length=n), Tm=numeric(length=n), GC=numeric(length=n), mismatches=numeric(length=n), self_complementary=numeric(length=n), self_3prime_complementary=numeric(length=n))
+  n=(width(consensus))*(length_max-length_min+1)
+  df<-data.frame(ID=numeric(length = n), start=numeric(length = n), end=numeric(length=n), seq=character(length=n), Tm=numeric(length=n), GC=numeric(length=n), mismatches=numeric(length=n), self_complementary=numeric(length=n), self_3prime_complementary=numeric(length=n))
   ind=0
   
   # IDEA: for-loop only to create df with positions and IDs; then use apply/maps to calculate Tm etc.?
-  for(i in 1:(width(consensus)-length_max-1)){
+  for(i in 1:(width(consensus))){
     for(j in length_min:length_max){
       ind<-ind+1
-      df$pos[[ind]]<-i
+      df$start[[ind]]<-as.numeric(i)
+      df$end[[ind]]<-as.numeric(i+j-1)
       df$ID[[ind]]<-ind
-      # determine current primer candidate sequence to be examined
-      sub<-subseq(consensus, start=i, width=j)
-      if(length(which(s2c(as.character(sub))%in% c("A", "G", "T", "C")))>1){
-        #get GC content
-        df$GC[[ind]]<-GC(as.character(sub))
-        #get sequence
-        df$seq[[ind]]<-as.character(sub)
-        
-        #find number of mismatches
-        temp<-s2c(as.character(sub))
-        mm<-which(!temp %in% c("A", "C", "G", "T"))
-        
-        df$mismatches[[ind]]<-length(mm)
-        
-        if(mismatch_tolerance==0 && length(which(is.na(c(Na,primer_conc))))==0){
-          # NN only works with non-ambiguous bases and with salt concentrations given
-          df$Tm[[ind]]<-Tm_NN(as.character(sub), Mg=1, Na=Na,dnac1=primer_conc, dnac2=0.1, nn_table="DNA_NN3" )
-        }else{
-          # otherwise use Wallace method
-          df$Tm[[ind]]<-Tm_Wallace(as.character(sub), ambiguous=TRUE)
-        }
-        # estimate self-complementarity
-        df$self_complementary[[ind]]<-check_self_complementarity(DNAStringSet(sub))
-        df$self_3prime_complementary[[ind]]<-check_3prime_selfcomplementarity(DNAStringSet(sub))
-      }
     }
   }
-
+  
+  # get rid of primer sequences extending over the ROI
+  df <- df %>% filter(end<width(consensus))
+  df <- df %>% filter(start>0)
+  
+  subset<-function(vec, names){
+    temp<-vec[names]
+    return(temp[which(!is.na(temp))])
+  }
+  
+  generate_primer<-function(vec, seq){
+    vec<-as.numeric(vec)
+    sub<-subseq(seq, start=vec[[2]], end=vec[[3]]) %>% as.character()
+    #get GC content
+    vec[[6]]<-GC(sub)
+    #get sequence
+    vec[[4]]<-sub
+    
+    #find number of mismatches
+    vec[[7]]<-sub %>% s2c() %>% table() %>% subset(., c("M", "R", "W", "S", "Y", "K", "V", "H", "D", "B", "N", "-", "+", ".")) %>% sum()
+    # estimate self-complementarity
+    return(unlist(vec))
+  }
+  
+  # restore proper dataframe structure
+  df_new<-apply(df, 1, generate_primer, seq=consensus) %>% t() 
+  df_new<- df_new %>% data.frame()
+  colnames(df_new)<-colnames(df)
+  rownames(df_new)<-df_new$ID
+  
+  df<-df_new
+  df$start<-as.numeric(df$start)
+  df$end<-as.numeric(df$end)
+  df$ID<-as.numeric(df$ID)
+  df$GC<-as.numeric(df$GC)
+  df$mismatches<-as.numeric(df$mismatches)
+  df$Tm<-as.numeric(df$Tm)
+  df$self_complementary<-as.numeric(df$self_complementary)
+  df$self_3prime_complementary<-as.numeric(df$self_3prime_complementary)
+  
+  # filter out primers with too extreme GC content or too many mismatches to save computation time
+  df <- df %>% filter(GC>gc_thres)  %>% filter(mismatches<mismatch_tolerance+1)
+  
+  #calculate all melting temperatures
+  if(!Tm_method=="TibMolBiol"){
+    if(mismatch_tolerance==0 && length(which(is.na(c(Na,primer_conc))))==0){
+      # NN only works with non-ambiguous bases and with salt concentrations given
+      df$Tm<-df$seq %>% lapply(., FUN=Tm_NN, Mg=1, Na=Na,dnac1=primer_conc, dnac2=0.1, nn_table="DNA_NN3") 
+    }else{
+      # otherwise use Wallace method
+      df$Tm<-df$seq %>% lapply(., FUN=Tm_Wallace, ambiguous=TRUE)
+    }
+  }else{
+    dnac1=0.25
+    dnac2=0.01
+    Na=0.1
+    Mg=0.5
+    K=0.1
+    Tris=0.1
+    df$Tm<-df$seq %>% lapply(., FUN=Tm_NN, dnac1 = dnac1, dnac2=dnac2, Na=Na, Mg=Mg, K=K, Tris=Tris, nn_table="DNA_NN1")
+  }
+  
+  
+  # filter out primers with Tm outside of range to be considered
+  df <- df %>% filter(Tm>Tm_lower) %>% filter(Tm<Tm_upper+Tm_delta_probe)
+  
+  # estimate self-complementarity
+  df$self_complementary<-lapply(df$seq, check_self_complementarity)
+  df$self_3prime_complementary<-lapply(df$seq, check_3prime_selfcomplementarity)
+  
   # filter out those with more than (max_repetitions) repetitions of same nucleotide or dinucleotide
   failed<-unique(c(grep(paste("(.)\\1{", as.character(max_repetitions), ",}", sep=""), df$seq), grep(paste("(..)\\1{", as.character(max_repetitions), ",}", sep=""), df$seq)))
   df<-df[which(!df$ID %in% failed),]
- 
-  # filter primers and probes according to input parameters
-  df_primer<- df %>% filter(Tm>Tm_lower) %>% filter(Tm<Tm_upper) %>% filter(GC>gc_thres)  %>% filter(mismatches<mismatch_tolerance+1) %>% filter(self_complementary<max_complementarity+1) %>% filter(self_3prime_complementary<max_complementarity+1)
-
-  df_probe<- df %>% filter(Tm>Tm_lower+Tm_delta_probe) %>% filter(Tm<Tm_upper+Tm_delta_probe) %>% filter(GC>gc_thres)  %>% filter(mismatches<mismatch_tolerance+1)  %>% filter(self_complementary<max_complementarity+1)  %>% filter(self_3prime_complementary<max_complementarity+1)
-
-  df_sets<-data.frame(ID_fwd=numeric(), ID_probe=numeric(), ID_rev=numeric(), deltaTm=numeric())
   
+  # filter primers and probes according to input parameters
+  df_primer<- df %>% filter(Tm>Tm_lower) %>% filter(Tm<Tm_upper) %>% filter(self_complementary<max_complementarity+1) %>% filter(self_3prime_complementary<max_complementarity+1)
+  
+  df_probe<- df %>% filter(Tm>Tm_lower+Tm_delta_probe) %>% filter(Tm<Tm_upper+Tm_delta_probe) %>% filter(GC>gc_thres)  %>% filter(mismatches<mismatch_tolerance+1)  %>% filter(self_complementary<max_complementarity+1)  %>% filter(self_3prime_complementary<max_complementarity+1)
+  
+  df_sets<-data.frame(ID_fwd=numeric(), ID_probe=numeric(), ID_rev=numeric(), deltaTm=numeric())
   # find potential matching primer and probe 
   for(i in 1:dim(df_primer)[[1]]){
     if(!is.na(position_probe)){
-      if(df_primer$pos[[i]]<position_probe-length_max*2){
+      if(df_primer$end[[i]]<position_probe-length_max*2){
         next
       }
-      if(df_primer$pos[[i]]>position_probe){
+      if(df_primer$start[[i]]>position_probe){
         next
       }
     }
-
+    
     #find potential probe positions
-    range_probe=c(df_primer$pos[[i]]+nchar(df_primer$seq[[i]])+min_dist+1, df_primer$pos[[i]]+nchar(df_primer$seq[[i]])+max_dist+1)
+    range_probe=c(df_primer$start[[i]]+nchar(df_primer$seq[[i]])+min_dist+1, df_primer$end[[i]]+nchar(df_primer$seq[[i]])+max_dist+1)
     
     if(!is.na(position_probe)){
       if(!(position_probe > range_probe[[1]] && position_probe < range_probe[[2]])){
@@ -157,7 +203,7 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
       }
     }
     
-    probes<-df_probe %>% filter(pos>range_probe[[1]]) %>% filter(pos<range_probe[[2]]) %>% filter(Tm>df_primer$Tm[[i]]+Tm_delta_probe) %>% filter(Tm<df_primer$Tm[[i]]+Tm_delta_probe+5)
+    probes<-df_probe %>% filter(start>range_probe[[1]]) %>% filter(end<range_probe[[2]]) %>% filter(Tm>df_primer$Tm[[i]]+Tm_delta_probe) %>% filter(Tm<df_primer$Tm[[i]]+Tm_delta_probe+5)
     # filter out probes that start with a G (quenches fluorophore!)
     probes<-probes[grep("^G\\w+", unlist(probes$seq), invert=TRUE),]
     #if(!is.na(position_probe)){
@@ -165,21 +211,21 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
     #}
     if(dim(probes)[[1]]>0){
       for(j in 1:dim(probes)[[1]]){
-          #find potential reverse primer positions
-          range_rev<-c(probes$pos[[j]]+nchar(probes$seq[[j]])+min_dist+1, probes$pos[[j]]+nchar(probes$seq[[j]])+max_dist+1)
-          reverse<-df_primer %>% filter(pos>range_rev[[1]]) %>% filter(pos<range_rev[[2]]) %>% filter(Tm>df_primer$Tm[[i]]-Tm_delta_max) %>% filter(Tm<df_primer$Tm[[i]]+Tm_delta_max)
-          
-          if(dim(reverse)[[1]]>0){
-            df_sets<-rbind(df_sets, data.frame(ID_fwd=rep(df_primer$ID[[i]], times=dim(reverse)[[1]]), ID_probe=rep(probes$ID[[j]], times=dim(reverse)[[1]]), ID_rev= reverse$ID))
-            }
+        #find potential reverse primer positions
+        range_rev<-c(probes$start[[j]]+nchar(probes$seq[[j]])+min_dist+1, probes$end[[j]]+nchar(probes$seq[[j]])+max_dist+1)
+        reverse<-df_primer %>% filter(start>range_rev[[1]]) %>% filter(end<range_rev[[2]]) %>% filter(Tm>df_primer$Tm[[i]]-Tm_delta_max) %>% filter(Tm<df_primer$Tm[[i]]+Tm_delta_max)
+        
+        if(dim(reverse)[[1]]>0){
+          df_sets<-rbind(df_sets, data.frame(ID_fwd=rep(df_primer$ID[[i]], times=dim(reverse)[[1]]), ID_probe=rep(probes$ID[[j]], times=dim(reverse)[[1]]), ID_rev= reverse$ID))
         }
       }
+    }
   }
-  
   # calculate deviances from optimum values and score + order primer-probe sets according toadherence to optimum values
   if(dim(df_sets)[[1]]==0){
     stop("Error: No primer-probe combinations were found for your search parameters. Please repeat the search with less stringent requirements.")
   }
+  
   df_sets$mismatches<-NA
   df_sets$deltaTm<-NA
   df_sets$delta_GC<-NA
@@ -198,13 +244,13 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
   temp<-list(df[as.character(unlist(df_sets[,1])),], df[as.character(unlist(df_sets[,2])),], df[as.character(unlist(df_sets[,3])),])
   
   # get difference in Tm
-  df_sets$deltaTm<-abs(temp[[1]]$Tm - temp[[3]]$Tm)
+  df_sets$deltaTm<-abs(unlist(temp[[1]]$Tm) - unlist(temp[[3]]$Tm))
   
   # get difference from optimal GC
   df_sets$delta_GC<-rowSums(abs(cbind(temp[[1]]$GC-50, temp[[2]]$GC-50, temp[[3]]$GC-50)))
   
   # get amplicon size
-  df_sets$amplicon_size<-temp[[3]]$pos+nchar(temp[[3]]$seq)-temp[[1]]$pos-1
+  df_sets$amplicon_size<-temp[[3]]$end-temp[[1]]$start
   
   # get number of mismatches
   df_sets$mismatches<-rowSums(cbind(temp[[1]]$mismatches, temp[[2]]$mismatches, temp[[3]]$mismatches))
@@ -242,7 +288,7 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
     sub<-df[as.character(unlist(df_sets[i,c(1:3)])),]
     
     # get Tmand sequence of amplicon
-    amplicon<-substr(consensus, sub$pos[[1]], (sub$pos[[3]]+nchar(sub$seq[[3]])-1))
+    amplicon<-substr(consensus, sub$start[[1]], sub$end[[3]])
     df_sets$amplicon_seq[[i]]<-amplicon
     if(mismatch_tolerance==0 && length(which(is.na(c(Na, primer_conc))))==0){
       # NN only works with non-ambiguous bases and with salt concentrations given
@@ -282,7 +328,6 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
   if(length(sequences)>1){
     out<-validate_primers(out, sequences)
   }
-    
   
   return(out)
 }
