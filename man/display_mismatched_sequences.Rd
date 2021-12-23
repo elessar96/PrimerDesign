@@ -17,7 +17,7 @@ display_mismatched_sequences(primers, sequences, ref_seq = NA)
 NULL. Opens browser window to inspect sequences.
 }
 \description{
-This function displays the sequneces of a primer-probe set together with any sequences in the dataset that it has any mismatches with.
+This function displays the sequences of a primer-probe set together with any sequences in the data set that it has any mismatches with.
 }
 \details{
 This function aligns the primer-probe set with sequences that previously mismatches were detected with. It then displays the alignment for manual inspection. Additional sequences that should always be displayed, regardless of whether there are mismatches with the primers, can be passed as ref_seq.

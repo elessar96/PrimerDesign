@@ -18,6 +18,6 @@ data.frame as from design_primers() with additional information on mismatching s
 This function searches for mismatches of primer-probe sets with a set of sequences.
 }
 \details{
-This function searches for sequences in the data set that have mismatches with any of the sequences in the data set and stores the sequence name and minimum alignment score of any mismatching sequence in the primers data.frame.
+This function searches for sequences in the data set that have mismatches with any of the primer-probe sets and stores the sequence name and minimum alignment score of any mismatching sequence in the primers data.frame.
 }
 \keyword{primer}

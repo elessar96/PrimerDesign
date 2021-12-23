@@ -15,6 +15,7 @@
 #' @param Tm_delta_max Maximum Tm difference between forward and reverse primer that will be tolerated.
 #' @param Tm_delta_probe Minimum difference between primer Tm and probe Tm in any given primer-probe set. Defaults to 5 degree C.
 #' @param n_sets How many primer-probe sets to return. Defaults to 200.
+#' @param Tm_method Method to calculate Tm. If set to any other value the script will either use nearest neighbor thermodynamics or the Wallace rule to calculate the Tm, depending on the values supplied. If any of Na or primer_conc are set to NA, Wallace rule will be used, other wise NN.
 #' @param Na Sodium concentration in mM to be assumed for Tm calculation. Defaults to 300 mM. If set to a non-numeric value, Tm will be calculated based on GC content.
 #' @param primer_conc Primer concentration in microM to be assumed for Tm calculation. Defaults to 0.5 microM. If set to a non-numeric value, Tm will be calculated based on GC content.
 #' @param mismatch_threshold Threshold of which fraction of the input sequences can disagree at one specific base for it still to be considered a clear consensus. Defaults to 0.05.
@@ -22,6 +23,7 @@
 #' @param max_complementarity Maxmium alignment score with self or other primers of the same set. Defaults to 4.
 #' @param seqs_aligned Whether input sequences are aligned. Setting to TRUE if sequences are already aligned saves computation time.
 #' @param position_probe If given (as nt from start of the complete sequence), only probes covering this position in the sequence will be considered
+#' @param check_spec If set to a DNAStringSet object, a function will be called to check whether the primers are likely to exhibit unspecific binding with any of the supplied sequences
 #' @return list of two elements:
 #' @return  all_seqs: data.frame with unique ID, start position within sequence (pos), sequence information (seq), melting Temperature (Tm), GC content (GC), number of ambivalent bases (mismatches), self complementarity score (self_complementary) and self 3prime complementarity score (self_3prime_complementarity) 
 #' @keywords primer
@@ -30,9 +32,11 @@
 
 #TO DO: investigate whether porting loops to C++ could increase speed!
 #TO DO: if not, get rid of loops!
+# TO DO: reduce runtime of validate_primers by looping over list of all sequences (get rid of replicates!)
+# TO DO: reduce runtime of design_primers by implementing nested for-loop in C++!
 
 # function to get primer candidates
-design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_dist=2, max_dist=50, gc_thres=30, amplicon_length_opt=90, mismatch_tolerance=0, Tm_in=NA, Tm_delta_max=1.5, Tm_delta_probe=5, n_sets=200, Na=300, primer_conc=0.5, mismatch_threshold=0.05, max_repetitions=3, max_complementarity=4, check_spec=NA, position_probe=NA, seqs_aligned=FALSE){
+design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_dist=2, max_dist=50, gc_thres=30, amplicon_length_opt=90, mismatch_tolerance=0, Tm_in=NA, Tm_delta_max=1.5, Tm_delta_probe=5, n_sets=200, Na=300, primer_conc=0.5, mismatch_threshold=0.05, max_repetitions=3, max_complementarity=4, check_spec=NA, position_probe=NA, seqs_aligned=FALSE, Tm_method="TibMolBiol"){
   suppressPackageStartupMessages(library(DECIPHER))
   suppressPackageStartupMessages(library(tidyr))
   suppressPackageStartupMessages(library(dplyr))
@@ -287,7 +291,7 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
   for(i in 1:dim(df_sets)[[1]]){
     sub<-df[as.character(unlist(df_sets[i,c(1:3)])),]
     
-    # get Tmand sequence of amplicon
+    # get Tm and sequence of amplicon
     amplicon<-substr(consensus, sub$start[[1]], sub$end[[3]])
     df_sets$amplicon_seq[[i]]<-amplicon
     if(mismatch_tolerance==0 && length(which(is.na(c(Na, primer_conc))))==0){
@@ -334,6 +338,7 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
 
 check_3prime_selfcomplementarity<-function(p){
   # make reverse complement
+  p <- p %>% DNAStringSet()
   p2<-reverseComplement(p) %>% as.character() %>% s2c()
   p<-as.character(p) %>% s2c()
   
@@ -454,43 +459,36 @@ validate_primers <- function(primers, seqs){
   fwd<-primers$best_candidates %>% pull(fwd) %>% DNAStringSet()
   probe<-primers$best_candidates %>% pull(probe) %>% DNAStringSet() 
   rev<-primers$best_candidates %>% pull(rev) %>% DNAStringSet() %>% reverseComplement()
+  
+  all_oligo_IDs<-c(primers$best_candidates$ID_fwd, primers$best_candidates$ID_probe, primers$best_candidates$ID_rev) %>% unique() %>% as.character()
+
   names_seq<-seqs %>% names()
+  primers$best_candidates$fwd_pot_mismatch<-character(length=dim(primers$best_candidates)[[1]])
+  primers$best_candidates$fwd_mismatch_score<-numeric(length=dim(primers$best_candidates)[[1]])
+  primers$best_candidates$rev_pot_mismatch<-character(length=dim(primers$best_candidates)[[1]])
+  primers$best_candidates$rev_mismatch_score<-numeric(length=dim(primers$best_candidates)[[1]])
+  primers$best_candidates$probe_pot_mismatch<-character(length=dim(primers$best_candidates)[[1]])
+  primers$best_candidates$probe_mismatch_score<-numeric(length=dim(primers$best_candidates)[[1]])
   
-  primers$best_candidates$fwd_pot_mismatch<-character(length(dim(primers$best_candidates)[[1]]))
-  primers$best_candidates$fwd_mismatch_score<-numeric(length(dim(primers$best_candidates)[[1]]))
-  primers$best_candidates$rev_pot_mismatch<-character(length(dim(primers$best_candidates)[[1]]))
-  primers$best_candidates$rev_mismatch_score<-numeric(length(dim(primers$best_candidates)[[1]]))
-  primers$best_candidates$probe_pot_mismatch<-character(length(dim(primers$best_candidates)[[1]]))
-  primers$best_candidates$probe_mismatch_score<-numeric(length(dim(primers$best_candidates)[[1]]))
+  oligo_details<-data.frame(primers$all_seqs[as.character(all_oligo_IDs),], mismatches=character(length=length(all_oligo_IDs)), score=numeric(length=length(all_oligo_IDs)))
+
+  for( i in 1:dim(oligo_details)[[1]]){
+    sc<-pairwiseAlignment(seqs, oligo_details$seq[i], type="local", scoreOnly=TRUE)
+    if(!min(sc) == max(sc)){
+      lim<-max(sc)
+      names<-names_seq[which(sc<lim)]
+      oligo_details$mismatches[[i]]<-paste(names, collapse="_AND_")
+      oligo_details$score[[i]]<-min(sc)
+    }
+  }
   
-  for( i in 1:dim(primers$best_candidates)[[1]]){
-    al_fwd<-pairwiseAlignment(seqs, fwd[i], type="local")
-    al_probe<-pairwiseAlignment(seqs, probe[i], type="local")
-    al_rev<-pairwiseAlignment(seqs, rev[i], type="local")
-    
-    sc_fwd<-al_fwd %>% score()
-    if(!min(sc_fwd) == max(sc_fwd)){
-      lim<-max(sc_fwd)
-      names_fwd<-names_seq[which(sc_fwd<lim)]
-      primers$best_candidates$fwd_pot_mismatch[[i]]<-paste(names_fwd, collapse="_AND_")
-      primers$best_candidates$fwd_mismatch_score[[i]]<-min(sc_fwd)
-    }
-        
-    sc_probe<-al_probe %>% score()
-    if(!min(sc_probe) == max(sc_probe)){
-      lim<-max(sc_probe)
-      names_probe<-names_seq[which(sc_probe<lim)]
-      primers$best_candidates$probe_pot_mismatch[[i]]<-paste(names_probe, collapse="_AND_")
-      primers$best_candidates$probe_mismatch_score[[i]]<-min(sc_probe)
-    }
-    
-    sc_rev<-al_rev %>% score()
-    if(!min(sc_rev) == max(sc_rev)){
-      lim<-max(sc_rev)
-      names_rev<-names_seq[which(sc_rev<lim)]
-      primers$best_candidates$rev_pot_mismatch[[i]]<-paste(names_rev, collapse="_AND_")
-      primers$best_candidates$rev_mismatch_score[[i]]<-min(sc_rev)
-    }
+  for(i in 1:dim(primers$best_candidates)[[1]]){
+    primers$best_candidates$fwd_pot_mismatch[[i]]<-oligo_details[which(oligo_details$ID==primers$best_candidates$ID_fwd[[i]]),]$mismatches
+    primers$best_candidates$rev_pot_mismatch[[i]]<-oligo_details[which(oligo_details$ID==primers$best_candidates$ID_rev[[i]]),]$mismatches
+    primers$best_candidates$probe_pot_mismatch[[i]]<-oligo_details[which(oligo_details$ID==primers$best_candidates$ID_probe[[i]]),]$mismatches
+    primers$best_candidates$fwd_mismatch_score[[i]]<-oligo_details[which(oligo_details$ID==primers$best_candidates$ID_fwd[[i]]),]$score
+    primers$best_candidates$rev_mismatch_score[[i]]<-oligo_details[which(oligo_details$ID==primers$best_candidates$ID_rev[[i]]),]$score
+    primers$best_candidates$probe_mismatch_score[[i]]<-oligo_details[which(oligo_details$ID==primers$best_candidates$ID_probe[[i]]),]$score
   }
   
   seq_names_fwd <-primers$best_candidates$fwd_pot_mismatch %>% strsplit(., split="_AND_") #%>% unlist() %>% unique()

@@ -25,7 +25,8 @@ design_primers(
   max_complementarity = 4,
   check_spec = NA,
   position_probe = NA,
-  seqs_aligned = FALSE
+  seqs_aligned = FALSE,
+  Tm_method = "TibMolBiol"
 )
 }
 \arguments{
@@ -65,9 +66,13 @@ design_primers(
 
 \item{max_complementarity}{Maxmium alignment score with self or other primers of the same set. Defaults to 4.}
 
+\item{check_spec}{If set to a DNAStringSet object, a function will be called to check whether the primers are likely to exhibit unspecific binding with any of the supplied sequences}
+
 \item{position_probe}{If given (as nt from start of the complete sequence), only probes covering this position in the sequence will be considered}
 
 \item{seqs_aligned}{Whether input sequences are aligned. Setting to TRUE if sequences are already aligned saves computation time.}
+
+\item{Tm_method}{Method to calculate Tm. If set to any other value the script will either use nearest neighbor thermodynamics or the Wallace rule to calculate the Tm, depending on the values supplied. If any of Na or primer_conc are set to NA, Wallace rule will be used, other wise NN.}
 }
 \value{
 list of two elements:
