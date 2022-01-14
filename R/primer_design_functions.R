@@ -217,7 +217,7 @@ design_primers<-function(sequences, length_max=30, length_min=16, ROI=NA, min_di
       for(j in 1:dim(probes)[[1]]){
         #find potential reverse primer positions
         range_rev<-c(probes$start[[j]]+nchar(probes$seq[[j]])+min_dist+1, probes$end[[j]]+nchar(probes$seq[[j]])+max_dist+1)
-        reverse<-df_primer %>% filter(start>range_rev[[1]]) %>% filter(end<range_rev[[2]]) %>% filter(Tm>df_primer$Tm[[i]]-Tm_delta_max) %>% filter(Tm<df_primer$Tm[[i]]+Tm_delta_max)
+        reverse<-df_primer %>% filter(start>range_rev[[1]]) %>% filter(end<range_rev[[2]]) %>% filter(Tm>df_primer$Tm[[i]]-Tm_delta_max) %>% filter(Tm<df_primer$Tm[[i]]+Tm_delta_max) %>% filter(Tm<probes$Tm-Tm_delta_probe)
         
         if(dim(reverse)[[1]]>0){
           df_sets<-rbind(df_sets, data.frame(ID_fwd=rep(df_primer$ID[[i]], times=dim(reverse)[[1]]), ID_probe=rep(probes$ID[[j]], times=dim(reverse)[[1]]), ID_rev= reverse$ID))
